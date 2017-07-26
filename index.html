@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<html >
+<head>
+<title>Sugiyama Level Assignment</title>
+<link href="style.css" rel="stylesheet" type="text/css">
+<script type="text/javascript" src="d3js/d3.min.js" charset="utf-8"></script>
+<script type="text/javascript" src="levelAssignment.js" charset="utf-8"></script>
+<script type="text/javascript" src="forceDirect.js" charset="utf-8"></script>
+</head>
+<body id="body">	
+	<table>
+		<tr>
+			<td><h2>Force Direct</h2></td>
+			<td><h2>Level Assignment - Longest Path</h2></td>
+		</tr>
+		<tr>
+			<td >
+				<input  type="file" id="files" name="file" accept=".json"/>
+				<button onClick="drawFD()" style="width:70px">Draw</button>
+				<button onClick="stopFD()" style="width:70px">Stop</button>
+			</td>
+			<td align="center">
+				<button onClick="drawAllLevel()" style="width:120px">Draw All Level</button>
+				<button onClick="drawStep()" style="width:100px">Next Step</button>
+			</td>
+		</tr>
+		<tr>
+			<td>
+				<label >Charge:</label>
+				<input class="parameter" id="charge" type="number" value="-500" >
+				<label >Link Distance:</label>
+				<input class="parameter" id="linkDistance" type="number" value="60" >
+				<label >Link Strength:</label>
+				<input class="parameter" id="linkStrength" type="number" value="1" >
+				<label >Gravity:</label>
+				<input class="parameter" id="gravity" type="number" value="0.1">
+			</td>
+		</tr>
+		<tr id="svgTr">
+			<td id="svgTd" ><svg id="svgForce"></svg></td>
+			<td id="svgTd" ><svg id="svgLevel"></svg></td>
+		</tr>
+		<tr></tr>
+	</table>
+	<label style ="position:absolute;right:0;bottom:0">by Alessio Daniele Marra  </h5>
+	<script>
+
+	var reader; // reader del file in input
+	var svgLevel; // svg per il level assignment
+	var svgLevelHeight;
+	var svgLevelWidth;
+	var nodesLA ={}; // nodi del grafo per il level assignment
+	var nodesFD = {}; // nodi del grafo per il force direct
+	var edgesLA = {}; // archi del grafo (con source e target) per il level assignment
+	var edgesFD = {}; 
+	var firstDrawLA = true;
+	var firstDrawStep = true;
+	var levels;
+
+	var nodeRay = 15;
+	var colors = colores_google;//d3.scaleOrdinal(d3.schemeCategory20);
+
+	var drawnFD = false;
+	var nodeDrawn = 0;
+	var svgNodes; // nodi e archi inseriti nell'svg e richiamati poi per l'update
+	var svgEdges; // in ogni step del level assignment
+
+	// LETTURA DEL FILE 
+	document.getElementById('files').addEventListener('change', handleFileSelect, false);
+	function handleFileSelect(evt) {
+    	var file = evt.target.files[0];    
+		reader = new FileReader();
+		reader.readAsText(file);
+
+	}
+
+// DISEGNO IL GRAFO CON IL FORCE DIRECT E CALCOLO IL LEVEL ASSIGNMENT
+function drawFD(){
+	var graphFD = inizializeGraph();
+	nodesFD = graphFD.nodes;
+	edgesFD = graphFD.edges;
+	longestPathLevelAssignment(nodesFD);
+
+	drawForceDirect(nodesFD,edgesFD,nodeRay);
+
+	drawnFD = true;
+	if(nodeDrawn>0) {// se ho gia' disegnato qualche nodo nel LA
+		nodeDrawn = 0;
+		firstDrawStep = true;
+		svgLevel.selectAll("*").remove();
+	}
+} // end draw
+
+function drawStep() {
+	if(!drawnFD) {
+		drawFD();
+		setTimeout(function(){
+		stopFD();
+	    drawStepReal(); // serve per aspettare un secondo dopo aver disegnato il force direct per poi fare il primo step
+		}, 1000);
+	}
+	else {
+		stopFD();
+		drawStepReal();
+	}
+}
+
+function drawStepReal() {
+	if (firstDrawStep){
+		if(!firstDrawLA) {
+			firstDrawLA = true;
+			svgLevel.selectAll("*").remove();
+		}
+		//calcolo tutti i valori dei nodi, senza stamparli
+		var graphLA = inizializeGraph();
+		nodesLA = graphLA.nodes;
+		edgesLA = graphLA.edges;
+		longestPathLevelAssignment(nodesLA);
+		coordinateAssignment();
+
+		// definisco una freccia per gli archi
+		svgLevel.append('svg:defs').append('svg:marker').attr('id', 'end-arrow').attr('viewBox', '0 -5 10 10')
+		    .attr('refX', 6).attr('markerWidth', 4).attr('markerHeight', 4).attr('orient', 'auto').append('svg:path')
+		    .attr('d', 'M0,-5L10,0L0,5');
+
+		nodesLA.sort(function(a, b){
+			if(a.level == b.level)
+				return a.ranking - b.ranking;
+    		return a.level - b.level;
+		});
+		// catturo tutti i nodi e gli archi, poi faro' l'update ogni volta per mostrarli ad uno ad uno
+		svgNodes = svgLevel.selectAll(".nodesLA").data(nodesLA).enter();
+		svgEdges = svgLevel.selectAll(".edgeLA").data(edgesLA).enter();
+		firstDrawStep=false;
+	}
+	if(nodesLA.length>nodeDrawn) { // se non ho ancora disegnato tutti i nodi
+		deleteNodeFD(nodesLA[nodeDrawn].name);
+		drawNodeLA(nodesLA[nodeDrawn].name);
+		nodeDrawn += 1;
+	}
+}
+
+function drawNodeLA(nodeName) {
+	// funzioni molto simili a quelle presenti in printGraph() solo che faccio update e non enter e faccio delle filter
+
+	// stampo gli archi
+	var localEdges = svgEdges.filter(function(d){return d.source.name==nodeName;})
+	.append("path").attr("class","edgeLA").attr("marker-end", "url(#end-arrow)");
+
+	localEdges.attr('d', function(d){
+		var deltaX = d.target.x - d.source.x;
+        deltaY = d.target.y - d.source.y;
+        dist = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+        normX = deltaX / dist;
+        normY = deltaY / dist;
+        if(dist >54) { 	
+	        sourcePadding = d.left ? 24 : 17;
+	        targetPadding = d.right ? 29 : 22;
+        }
+        else if(dist>27){
+	        sourcePadding = 13;
+	        targetPadding = 13;
+        }
+        else {
+        	sourcePadding = 0;
+	        targetPadding = 0;
+        };
+        sourceX = d.source.x + (sourcePadding * normX);
+        sourceY = d.source.y + (sourcePadding * normY);
+        targetX = d.target.x - (targetPadding * normX);
+        targetY = d.target.y - (targetPadding * normY);
+        avgX = (sourceX + targetX ) *8/16;
+        avgY = (sourceY + targetY ) *8/16; // qui cambio se voglio incurvare gli archi
+    return 'M' + sourceX + ',' + sourceY + 'Q'+ avgX+" "+ avgY+',' + targetX + ' ' + targetY ;
+	}).attr('fill','transparent');
+
+	// stampo il nodo come un gruppo formato da cerchio e testo
+	var localNode = svgNodes.filter(function(d){;return d.name==nodeName;})
+			.append("g").attr("class", "nodeLA")
+			.attr("transform", function(d, i) {return "translate(" + d.x + "," + d.y + ")";});
+
+	localNode.append("circle").style("fill", function(d) { return colors(d.level); }).attr("r", nodeRay);
+	localNode.append("text").attr("text-anchor", "middle").attr("dy", ".35em").text(function(d) {return d.name});
+}
+
+
+function drawAllLevel() {
+
+	if (firstDrawLA){
+		firstDrawLA=false;
+		if(!firstDrawStep) {
+			firstDrawStep = true;
+			resetFD();
+			drawForceDirect(nodesFD,edgesFD,nodeRay);
+			nodeDrawn = 0;
+			svgLevel.selectAll("*").remove();
+		}
+	} else svgLevel.selectAll("*").remove();
+	
+	var graphLA = inizializeGraph();
+	nodesLA = graphLA.nodes;
+	edgesLA = graphLA.edges;
+	longestPathLevelAssignment(nodesLA);
+	coordinateAssignment();
+	printGraph();
+}
+
+
+function coordinateAssignment() {
+	// assegno le coordinate ai vari nodi
+	levels = 0;
+	levelToQuantity = {} // per ogni livello mi segno quanti ce ne sono
+	for (var i=0; i<nodesLA.length; i++) {
+		var lev = nodesLA[i].level;
+		if (lev in levelToQuantity)
+			levelToQuantity[lev] += 1;
+		else levelToQuantity[lev] = 1;
+		if (levels < lev)
+			levels = lev;
+	}
+	levels += 1;
+
+	levelToPosition = {} // per ogni livello mi segno la posizione a cui mettere il prossimo nodo
+	for(var i=0;i<levels;i++) 
+		levelToPosition[i] = 1;
+
+	heightBetweenNodes = svgLevelHeight/(levels+1) ; //+1 per estetica
+	for (var i=0; i<nodesLA.length; i++) {
+		var nodeLevel = nodesLA[i].level;
+		widthBetweenNodes = svgLevelWidth/(levelToQuantity[nodeLevel]+1);
+		nodesLA[i].x = levelToPosition[nodeLevel]*widthBetweenNodes;
+		nodesLA[i].y = (levels - nodeLevel)*heightBetweenNodes;
+
+		// salvo l'ordine dei nodi in una variabile, utile quando voglio disegnarli uno alla volta, poiche' faro' un sort per il livello e per il ranking
+		nodesLA[i].ranking = levelToPosition[nodeLevel];
+
+		levelToPosition[nodeLevel] += 1;
+	}
+
+}
+
+function printGraph() {
+	// definisco una freccia per gli archi
+	svgLevel.append('svg:defs').append('svg:marker')
+	    .attr('id', 'end-arrow')
+	    .attr('viewBox', '0 -5 10 10')
+	    .attr('refX', 6)
+	    .attr('markerWidth', 4)
+	    .attr('markerHeight', 4)
+	    .attr('orient', 'auto')
+	  	.append('svg:path')
+	    .attr('d', 'M0,-5L10,0L0,5');
+
+
+	// stampo gli archi
+	graphicalEdges = svgLevel.selectAll(".edgeLA").data(edgesLA).enter().append("path")
+			.attr("class","edgeLA")
+			.attr("marker-end", "url(#end-arrow)");
+
+
+	graphicalEdges.attr('d', function(d){
+		var deltaX = d.target.x - d.source.x;
+        deltaY = d.target.y - d.source.y;
+        dist = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+        normX = deltaX / dist;
+        normY = deltaY / dist;
+        if(dist >54) { 	
+	        sourcePadding = d.left ? 24 : 17;
+	        targetPadding = d.right ? 29 : 22;
+        }
+        else if(dist>27){
+	        sourcePadding = 13;
+	        targetPadding = 13;
+        }
+        else {
+        	sourcePadding = 0;
+	        targetPadding = 0;
+        };
+        sourceX = d.source.x + (sourcePadding * normX);
+        sourceY = d.source.y + (sourcePadding * normY);
+        targetX = d.target.x - (targetPadding * normX);
+        targetY = d.target.y - (targetPadding * normY);
+        avgX = (sourceX + targetX ) *8/16;
+        avgY = (sourceY + targetY ) *8/16; // qui cambio se voglio incurvare gli archi
+    return 'M' + sourceX + ',' + sourceY + 'Q'+ avgX+" "+ avgY+',' + targetX + ' ' + targetY ;
+	})
+	.attr('fill','transparent');
+
+	// stampo i nodi come un gruppo formato da cerchio e testo
+	graphicalNodes = svgLevel.selectAll(".nodeLA").data(nodesLA).enter().append("g").attr("class", "nodeLA")
+		.attr("transform", function(d, i) {return "translate(" + d.x + "," + d.y + ")";});
+
+	graphicalNodes.append("circle")
+				.style("fill", function(d) { return colors(d.level); })
+				.attr("r", nodeRay);
+	graphicalNodes.append("text")
+				.attr("text-anchor", "middle")
+				.attr("dy", ".35em")
+				.text(function(d) {return d.name});
+
+
+
+}
+
+function inizializeGraph() {
+		
+		svgLevel = d3.select("#svgLevel");
+		svgLevelHeight = svgLevel.node().getBoundingClientRect().height;
+		svgLevelWidth = svgLevel.node().getBoundingClientRect().width;
+
+		var graph = JSON.parse(reader.result);
+		var nodes = graph.nodes;
+		var edges = graph.edges;
+
+		var nodeMap = {}; // mappa dal nome al nodo
+		// inizializzo i nodi
+		for (var i=0; i<nodes.length; i++) {
+			nodes[i].edges = [];
+			nodes[i].isSink = false;
+			nodes[i].level = -1;
+			nodeMap[nodes[i].name] = nodes[i];
+		}
+
+		// inizializzo gli archi
+		for (var i=0; i<edges.length; i++)	{
+			var s = nodeMap[edges[i].source];
+			var t = nodeMap[edges[i].target];
+			edges[i].source = s;
+			edges[i].target = t;
+			s.edges[s.edges.length] = t;
+		}
+
+		return graph;
+}
+
+
+	</script>
+</body>
+</html>
